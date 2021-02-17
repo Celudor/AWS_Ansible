@@ -1,0 +1,9 @@
+---
+roles:
+  - name: cloudalchemy.grafana
+  - name: cloudalchemy.node-exporter
+  - name: cloudalchemy.prometheus
+
+collections:
+  - name: community.aws
+  - name: amazon.aws
