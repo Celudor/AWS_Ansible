@@ -1,0 +1,215 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    region: us-east-1
+    application: poc-monitoring
+    vpc_name: "vpc-{{application}}"
+    sg_name: "{{application}}"
+    image: ami-03d315ad33b9d49c4
+    key_name: ansible
+    cidr_block: 10.0.0.0/24
+
+  tasks:
+    - name: Create VPC
+      ec2_vpc_net:
+        ec2_access_key: "{{ec2_access_key}}"
+        ec2_secret_key: "{{ec2_secret_key}}"
+        region: "{{region}}"
+        name: "{{vpc_name}}"
+        cidr_block: "{{cidr_block}}"
+        tags:
+          application: "{{application}}"
+      register: vpc_facts
+
+    - name: Add subinet to VPC "{{vpc_facts.vpc.id}}"
+      ec2_vpc_subnet:
+        ec2_access_key: "{{ec2_access_key}}"
+        ec2_secret_key: "{{ec2_secret_key}}"
+        region: "{{region}}"
+        vpc_id: "{{vpc_facts.vpc.id}}"
+        cidr: "{{cidr_block}}"
+      register: subnet_facts
+
+    - name: Add Internet gateway to VPC "{{vpc_facts.vpc.id}}"
+      ec2_vpc_igw:
+        ec2_access_key: "{{ec2_access_key}}"
+        ec2_secret_key: "{{ec2_secret_key}}"
+        region: "{{region}}"
+        vpc_id: "{{vpc_facts.vpc.id}}"
+      register: igw_facts
+
+    - name: Get route table
+      ec2_vpc_route_table_info:
+        ec2_access_key: "{{ec2_access_key}}"
+        ec2_secret_key: "{{ec2_secret_key}}"
+        region: "{{region}}"
+        filters:
+          vpc-id: "{{vpc_facts.vpc.id}}"
+          "association.main": "true"
+      register: route_table_facts
+
+    - name: Add route
+      ec2_vpc_route_table:
+        ec2_access_key: "{{ec2_access_key}}"
+        ec2_secret_key: "{{ec2_secret_key}}"
+        region: "{{region}}"
+        vpc_id: "{{vpc_facts.vpc.id}}"
+        lookup: id
+        route_table_id: "{{route_table_facts.route_tables[0].id}}"
+        subnets:
+          - "{{subnet_facts.subnet.id}}"
+        routes:
+          - dest: 0.0.0.0/0
+            gateway_id: "{{igw_facts.gateway_id}}"
+
+    - name: Upload ssh key
+      ec2_key:
+        ec2_access_key: "{{ec2_access_key}}"
+        ec2_secret_key: "{{ec2_secret_key}}"
+        region: "{{region}}"
+        name: "{{key_name}}"
+        key_material: "{{ lookup('file', '/home/celudor/.ssh/{{key_name}}.pub')}}"
+
+    - name: Create SG ssh
+      ec2_group:
+        ec2_access_key: "{{ec2_access_key}}"
+        ec2_secret_key: "{{ec2_secret_key}}"
+        region: "{{region}}"
+        vpc_id: "{{vpc_facts.vpc.id}}"
+        name: "{{sg_name}}-ssh"
+        description: Allow ssh from all
+        rules:
+          - proto: tcp
+            ports:
+              - 22
+            cidr_ip: 0.0.0.0/0
+      register: sg_ssh_facts
+
+    - name: Create SG prometheus
+      ec2_group:
+        ec2_access_key: "{{ec2_access_key}}"
+        ec2_secret_key: "{{ec2_secret_key}}"
+        region: "{{region}}"
+        vpc_id: "{{vpc_facts.vpc.id}}"
+        name: "{{sg_name}}-prometheus"
+        description: Allow connection to prometheus from all
+        rules:
+          - proto: tcp
+            ports:
+              - 9090
+            cidr_ip: 0.0.0.0/0
+      register: sg_prometheus_facts
+
+    - name: Create prometheus server
+      ec2_instance:
+        ec2_access_key: "{{ec2_access_key}}"
+        ec2_secret_key: "{{ec2_secret_key}}"
+        region: "{{region}}"
+        image_id: "{{image}}"
+        key_name: "{{key_name}}"
+        instance_type: t2.micro
+        name: "{{application}}-prometheus"
+        security_groups:
+          - "{{sg_ssh_facts.group_id}}"
+          - "{{sg_prometheus_facts.group_id}}"
+        vpc_subnet_id: "{{subnet_facts.subnet.id}}"
+        network:
+          assign_public_ip: true
+        tags:
+          application: "{{application}}"
+      register: server_prometheus_facts
+
+    - name: Add prometheus host to inventory
+      add_host:
+        name: "{{server_prometheus_facts.instances[0].public_dns_name}}"
+        ansible_user: ubuntu
+        ansible_ssh_private_key_file: "/home/celudor/.ssh/{{key_name}}"
+        group: prometheus
+
+    - name: Create SG grafana
+      ec2_group:
+        ec2_access_key: "{{ec2_access_key}}"
+        ec2_secret_key: "{{ec2_secret_key}}"
+        region: "{{region}}"
+        vpc_id: "{{vpc_facts.vpc.id}}"
+        name: "{{sg_name}}-grafana"
+        description: Allow connection to grafana from all
+        rules:
+          - proto: tcp
+            ports:
+              - 3000
+            cidr_ip: 0.0.0.0/0
+          - proto: tcp
+            ports:
+              - 9100
+            group_id: "{{sg_prometheus_facts.group_id}}"
+      register: sg_grafana_facts
+
+    - name: Create grafana server
+      ec2_instance:
+        ec2_access_key: "{{ec2_access_key}}"
+        ec2_secret_key: "{{ec2_secret_key}}"
+        region: "{{region}}"
+        image_id: "{{image}}"
+        key_name: "{{key_name}}"
+        instance_type: t2.micro
+        name: "{{application}}-grafana"
+        security_groups:
+          - "{{sg_ssh_facts.group_id}}"
+          - "{{sg_grafana_facts.group_id}}"
+        vpc_subnet_id: "{{subnet_facts.subnet.id}}"
+        network:
+          assign_public_ip: true
+        tags:
+          application: "{{application}}"
+      register: server_grafana_facts
+
+    - name: Add grafana host to inventory
+      add_host:
+        name: "{{server_grafana_facts.instances[0].public_dns_name}}"
+        ansible_user: ubuntu
+        ansible_ssh_private_key_file: "/home/celudor/.ssh/{{key_name}}"
+        group: grafana
+
+
+- hosts: prometheus
+  roles:
+    - cloudalchemy.prometheus
+    - cloudalchemy.node-exporter
+  vars:
+    prometheus_targets:
+      node:
+        - targets:
+          - 'localhost:9100'
+          - "{{hostvars['localhost']['server_grafana_facts'].instances[0].private_dns_name}}:9100"
+          labels:
+            env: demosite
+
+- hosts: grafana
+  roles:
+    - cloudalchemy.grafana
+    - cloudalchemy.node-exporter
+  vars:
+    grafana_security:
+      admin_user: admin
+      admin_password: "{{grafana_admin_password}}"
+    grafana_datasources:
+      - name: prometheus
+        type: prometheus
+        access: proxy
+        url: "http://{{hostvars['localhost']['server_prometheus_facts'].instances[0].private_dns_name}}:9090"
+        basicAuth: false
+    grafana_dashboards:
+      - dashboard_id: 3662
+        revision_id: 2
+        datasource: prometheus
+      - dashboard_id: 1860
+        revision_id: 22
+        datasource: prometheus
+      - dashboard_id: 2
+        revision_id: 2
+        datasource: prometheus
+...
