@@ -5,6 +5,8 @@ file="node_exporter-1.1.1.linux-amd64"
 user="node-exp"
 group="node-exp"
 
+cd /tmp
+
 # Requiments
 which unzip
 if [ $? -ne 0 ]; then 
@@ -12,7 +14,7 @@ if [ $? -ne 0 ]; then
 fi
 which aws
 if [ $? -ne 0 ]; then
-    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmo/awscliv2.zip"
+    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
     unzip /tmp/awscliv2.zip > /dev/null
     sudo /tmp/aws/install
 fi
@@ -25,7 +27,6 @@ sudo groupadd -r ${group}
 sudo useradd -r -g ${group} -M  -s /usr/sbin/nologin ${user}
 
 aws s3 cp s3://${bucket}/${file}.tar.gz /tmp
-cd /tmp
 tar zxf /tmp/${file}.tar.gz
 sudo cp -r /tmp/${file}/node_exporter /usr/local/bin/
 rm -rf /tmp/${file}*
@@ -67,7 +68,9 @@ sudo mkdir -p /var/lib/node_exporter
 sudo chown ${user} /var/lib/node_exporter
 sudo chgrp ${group} /var/lib/node_exporter
 sudo chmod u=rwx,g=rwx,o=rx /var/lib/node_exporter
-
-sudo semanage port -a -t http_port_t -p tcp 9100
+which semanage
+if [ $? -eq 0 ]; then
+    sudo semanage port -a -t http_port_t -p tcp 9100
+fi
 sudo systemctl daemon-reload
 sudo systemctl start node_exporter
